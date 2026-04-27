@@ -22,8 +22,10 @@ WHISPER_MODEL      = "tiny"
 BT_WARMUP_MS       = 400
 FOLLOW_UP_SECS     = 10   # seconds to keep listening after a response
 SILENCE_SECS       = 1.5  # seconds of quiet that ends a recording
-ENERGY_THRESHOLD   = 500  # RMS threshold for speech detection
+ENERGY_THRESHOLD   = 1200 # RMS threshold for speech detection (raise if triggering on noise)
+MIN_SPEECH_SECS    = 0.6  # minimum speech duration to count as valid input
 MAX_RECORD_SECS    = 12
+POST_SPEAK_DELAY   = 0.6  # seconds to wait after Jarvis finishes speaking before listening
 
 SLEEP_PHRASES = {"nevermind", "never mind", "go to sleep", "goodbye", "that's all", "stop listening"}
 
@@ -85,6 +87,10 @@ def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS):
                 if silent_chunks >= silent_needed:
                     break
 
+    # Require minimum speech duration to filter out noise blips
+    min_samples = int(SAMPLE_RATE * MIN_SPEECH_SECS)
+    if len(recorded) < min_samples:
+        return np.array([], dtype=np.int16)
     return np.array(recorded, dtype=np.int16)
 
 def transcribe(audio_array):
@@ -112,6 +118,7 @@ def speak(text):
     wav.write(tmp, rate, padded)
     subprocess.run(["pw-play", tmp], stderr=subprocess.DEVNULL, check=True)
     os.unlink(tmp)
+    time.sleep(POST_SPEAK_DELAY)  # let echo die before mic re-activates
 
 def is_simple_question(text):
     words = text.split()
@@ -181,8 +188,8 @@ def main():
         try:
             listen_for_wake_word(device_index)
 
-            # Small pause so "hey jarvis" finishes before we start recording
-            time.sleep(0.4)
+            # Wait for "hey jarvis" to finish before recording
+            time.sleep(0.6)
 
             # Record what comes right after the wake word
             audio = record_with_vad(device_index)
