@@ -20,8 +20,8 @@ WAKE_THRESHOLD    = 0.5
 RECORD_SECONDS    = 6
 WHISPER_MODEL     = "tiny"
 TTS_RATE          = 22050
-# Silence padding (samples) prepended to every clip to wake up Bluetooth
 BT_WARMUP_MS      = 400
+SLEEP_PHRASES     = {"nevermind", "never mind", "go to sleep", "goodbye", "that's all", "stop listening"}
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 client       = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -70,7 +70,6 @@ def speak(text):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         tmp = f.name
 
-    # Generate speech with Piper
     subprocess.run(
         [PIPER_BIN, "--model", PIPER_MODEL, "--output_file", tmp],
         input=text.encode(),
@@ -78,13 +77,21 @@ def speak(text):
         check=True,
     )
 
-    # Read wav, prepend silence to wake Bluetooth from low-power state
     rate, data = wav.read(tmp)
     os.unlink(tmp)
+
+    # Resample to 44100Hz — universally supported by Bluetooth A2DP
+    target_rate = 44100
+    if rate != target_rate:
+        ratio  = target_rate / rate
+        length = int(len(data) * ratio)
+        data   = np.interp(np.linspace(0, len(data), length), np.arange(len(data)), data).astype(data.dtype)
+        rate   = target_rate
+
+    # Prepend silence to wake Bluetooth from low-power state
     warmup = np.zeros(int(rate * BT_WARMUP_MS / 1000), dtype=data.dtype)
     padded = np.concatenate([warmup, data])
 
-    # Play through default PipeWire sink (Soundcore 2)
     sd.play(padded, samplerate=rate)
     sd.wait()
 
@@ -118,6 +125,9 @@ def main():
                 speak("I didn't catch that.")
                 continue
             print(f"  You said: {text}")
+            if any(p in text.lower() for p in SLEEP_PHRASES):
+                speak("Going to sleep. Say Hey Jarvis when you need me.")
+                continue
             reply = ask_claude(text)
             print(f"  Jarvis: {reply}")
             speak(reply)
