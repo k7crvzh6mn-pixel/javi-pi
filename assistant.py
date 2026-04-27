@@ -53,7 +53,7 @@ conversation = []
 # ── Audio helpers ─────────────────────────────────────────────────────────────
 def find_respeaker():
     for i, d in enumerate(sd.query_devices()):
-        if RESPEAKER_NAME.lower() in d["name"].lower() and d["max_input_channels"] > 0:
+        if RESPEAKER_NAME.lower() in d["name"].lower():
             return i
     raise RuntimeError("ReSpeaker not found — is it plugged in?")
 
