@@ -22,7 +22,8 @@ RESPEAKER_NAME    = "reSpeaker"
 SAMPLE_RATE       = 16000
 WAKE_THRESHOLD    = 0.5
 WHISPER_MODEL     = "tiny"
-BT_WARMUP_MS      = 400
+BT_WARMUP_MS      = 600
+BT_TAIL_MS        = 400  # silence after speech so end doesn't get clipped
 POST_SPEAK_DELAY  = 0.6
 FOLLOW_UP_SECS    = 10
 SILENCE_SECS      = 1.5
@@ -34,12 +35,12 @@ HOME_CITY         = "Corpus Christi, TX"
 SLEEP_PHRASES = {"nevermind", "never mind", "go to sleep", "goodbye", "that's all", "stop listening"}
 
 GREETINGS = [
-    "What do you need, Charles?",
-    "What's up, Charles?",
-    "Yeah, Charles?",
-    "What can I do for you, Charles?",
     "What's up?",
+    "Yeah?",
     "Go ahead.",
+    "What do you need?",
+    "I'm listening.",
+    "What's up, Charles?",  # occasional only
 ]
 
 THINKING_PHRASES = [
@@ -200,7 +201,8 @@ def speak(text):
     )
     rate, data = wav.read(tmp)
     warmup = np.zeros(int(rate * BT_WARMUP_MS / 1000), dtype=data.dtype)
-    wav.write(tmp, rate, np.concatenate([warmup, data]))
+    tail   = np.zeros(int(rate * BT_TAIL_MS / 1000), dtype=data.dtype)
+    wav.write(tmp, rate, np.concatenate([warmup, data, tail]))
     subprocess.run(["pw-play", tmp], stderr=subprocess.DEVNULL, check=True)
     os.unlink(tmp)
     time.sleep(POST_SPEAK_DELAY)
@@ -230,6 +232,7 @@ def ask_claude(text):
                 "You are Jarvis, a helpful home assistant on a Raspberry Pi owned by Charles, "
                 f"who lives in {HOME_CITY}. Keep answers concise — responses are spoken aloud. "
                 "No markdown, bullet points, or special characters. "
+                "Do not address the user by name in every response — only occasionally if natural. "
                 "Use the available tools for weather, sports scores, or any current information."
             ),
             tools=TOOLS,
