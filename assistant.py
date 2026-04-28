@@ -66,6 +66,7 @@ oww           = Model(wakeword_model_paths=[WAKE_WORD_MODEL])
 conversation  = []
 _device_index = 0
 _timers       = []  # active timer threads
+_keepalive    = None
 
 # ── Whisper hint learning ─────────────────────────────────────────────────────
 _BASE_HINTS = (
@@ -244,6 +245,39 @@ TOOL_FUNCTIONS = {
 }
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
+# ── ReSpeaker LED control ─────────────────────────────────────────────────────
+def led(state: str):
+    # States: listening (cyan spin), thinking (yellow pulse), speaking (off), off
+    color_map = {
+        "listening": "0,50,50",   # cyan
+        "thinking":  "50,50,0",   # yellow
+        "speaking":  "0,0,0",     # off while speaking
+        "off":       "0,0,0",
+        "ready":     "0,0,30",    # dim blue at rest
+    }
+    color = color_map.get(state, "0,0,0")
+    try:
+        # Try ALSA control first (works on most ReSpeaker models)
+        subprocess.run(
+            ["amixer", "-c", "2", "cset", "name='LED Color'", color],
+            capture_output=True, timeout=2
+        )
+    except Exception:
+        pass  # LEDs not controllable on this firmware — silently skip
+
+# ── Speaker keepalive ─────────────────────────────────────────────────────────
+def start_keepalive():
+    def _loop():
+        silence = np.zeros(int(44100 * 0.1), dtype=np.int16)  # 100ms of silence
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav.write(f.name, 44100, silence)
+            silent_file = f.name
+        while True:
+            time.sleep(90)  # every 90s to prevent auto-shutoff
+            subprocess.run(["pw-play", silent_file], capture_output=True)
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
 def find_respeaker():
     for i, d in enumerate(sd.query_devices()):
         if RESPEAKER_NAME.lower() in d["name"].lower():
@@ -353,6 +387,7 @@ def set_timer(seconds: int, label: str = "Timer"):
 def listen_for_wake_word(device_index):
     chunk_size = 1280
     print("Listening for 'Hey Jarvis'...")
+    led("ready")
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
                         blocksize=chunk_size, device=device_index) as stream:
         while True:
@@ -360,6 +395,7 @@ def listen_for_wake_word(device_index):
             prediction = oww.predict(chunk.flatten().astype(np.int16))
             if list(prediction.values())[0] >= WAKE_THRESHOLD:
                 oww.reset()
+                led("listening")
                 return
 
 # ── Claude ────────────────────────────────────────────────────────────────────
@@ -478,6 +514,7 @@ def handle_query(text):
     def fetch():
         reply_box[0] = ask_claude(text)
 
+    led("thinking")
     claude_thread = threading.Thread(target=fetch)
     claude_thread.start()
 
@@ -485,6 +522,7 @@ def handle_query(text):
         speak(random.choice(THINKING_PHRASES))
 
     claude_thread.join()
+    led("speaking")
     print(f"  Jarvis: {reply_box[0]}")
     speak(reply_box[0])
     return True
@@ -496,7 +534,9 @@ def main():
     print(f"ReSpeaker at index {_device_index}")
 
     ensure_bluetooth()
+    start_keepalive()
     speak("Jarvis is ready.")
+    led("ready")
 
     while True:
         try:

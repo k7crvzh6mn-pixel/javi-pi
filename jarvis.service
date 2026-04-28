@@ -1,12 +1,14 @@
 [Unit]
 Description=Jarvis Voice Assistant
-After=network.target bluetooth.target sound.target
-Wants=bluetooth.target
+After=network.target bluetooth.target pipewire.service pipewire-pulse.service
+Wants=bluetooth.target pipewire.service
 
 [Service]
-User=trips0007
 WorkingDirectory=/home/trips0007/javi-pi
 EnvironmentFile=/home/trips0007/javi-pi/.env
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PIPEWIRE_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ExecStartPre=/bin/sleep 20
 ExecStart=/home/trips0007/javi-pi/venv/bin/python3 /home/trips0007/javi-pi/assistant.py
 Restart=always
@@ -15,4 +17,4 @@ StandardOutput=append:/home/trips0007/javi-pi/jarvis.log
 StandardError=append:/home/trips0007/javi-pi/jarvis.log
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
