@@ -85,30 +85,49 @@ def web_search(query: str) -> str:
         return f"Search failed: {e}"
 
 def get_sports_score(team: str) -> str:
-    def search_scoreboard(url, team_lower):
+    from datetime import date, timedelta
+
+    def games_on_date(day_str, team_lower):
+        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={day_str}"
         with urllib.request.urlopen(url, timeout=5) as r:
             data = json.loads(r.read().decode())
+        found = []
         for game in data.get("events", []):
             if team_lower in game.get("name", "").lower():
                 status      = game["status"]["type"]["description"]
                 competitors = game["competitions"][0]["competitors"]
                 scores      = {c["team"]["displayName"]: c["score"] for c in competitors}
-                return f"{game['name']}: {' vs '.join(f'{k} {v}' for k,v in scores.items())} — {status}"
-        return None
+                score_str   = ", ".join(f"{k} {v}" for k, v in scores.items())
+                found.append(f"{game['shortName']} ({score_str}) — {status}")
+        return found
 
     try:
-        from datetime import date, timedelta
         team_lower = team.lower()
-        base = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+        results = []
 
-        # Check today then yesterday
-        for delta in [0, -1]:
+        # Search today + last 7 days
+        for delta in range(0, -8, -1):
             day = (date.today() + timedelta(days=delta)).strftime("%Y%m%d")
-            result = search_scoreboard(f"{base}?dates={day}", team_lower)
-            if result:
-                return result
+            games = games_on_date(day, team_lower)
+            results.extend(games)
 
-        return f"No recent games found for {team}."
+        # Also check next 3 days for upcoming games
+        upcoming = []
+        for delta in range(1, 4):
+            day = (date.today() + timedelta(days=delta)).strftime("%Y%m%d")
+            games = games_on_date(day, team_lower)
+            upcoming.extend(games)
+
+        if not results and not upcoming:
+            return f"No recent or upcoming games found for {team} in the last week."
+
+        summary = ""
+        if results:
+            summary += "Recent games: " + " | ".join(results[:3])
+        if upcoming:
+            summary += (" Next up: " if summary else "Upcoming: ") + upcoming[0]
+        return summary
+
     except Exception as e:
         return f"Couldn't fetch scores: {e}"
 
@@ -192,18 +211,37 @@ def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS,
         return np.array([], dtype=np.int16)
     return np.array(recorded, dtype=np.int16)
 
-WHISPER_HINT = (
+HINTS_FILE = "/home/trips0007/javi-pi/whisper_hints.txt"
+_BASE_HINTS = (
     "Lakers, Celtics, Warriors, Bulls, Heat, Knicks, Spurs, Nets, Clippers, Nuggets, "
     "Suns, Mavericks, Bucks, Sixers, Raptors, Rockets, Pistons, Pacers, "
     "weather, Corpus Christi, Jarvis, nevermind, go to sleep"
 )
+
+def load_hints() -> str:
+    base = _BASE_HINTS
+    if os.path.exists(HINTS_FILE):
+        extras = open(HINTS_FILE).read().strip()
+        if extras:
+            base += ", " + extras.replace("\n", ", ")
+    return base
+
+def save_hint(word: str):
+    word = word.strip().strip(".,!?")
+    if not word:
+        return
+    existing = open(HINTS_FILE).read() if os.path.exists(HINTS_FILE) else ""
+    if word.lower() not in existing.lower():
+        with open(HINTS_FILE, "a") as f:
+            f.write(word + "\n")
+        print(f"  Hint saved: {word}")
 
 def transcribe(audio_array):
     if len(audio_array) < SAMPLE_RATE * 0.3:
         return ""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         wav.write(f.name, SAMPLE_RATE, audio_array)
-        segments, _ = whisper.transcribe(f.name, language="en", initial_prompt=WHISPER_HINT)
+        segments, _ = whisper.transcribe(f.name, language="en", initial_prompt=load_hints())
         text = " ".join(s.text for s in segments).strip()
         os.unlink(f.name)
     return text
@@ -292,6 +330,19 @@ def handle_query(text):
     if any(p in text.lower() for p in SLEEP_PHRASES):
         speak("Going to sleep. Say Hey Jarvis when you need me.")
         return "sleep"
+
+    # Learn corrections: "no I said X", "I meant X", "remember X"
+    import re
+    correction = None
+    for pattern in [r"no[,]? i said (.+)", r"i meant (.+)", r"remember (.+)", r"the word is (.+)"]:
+        m = re.search(pattern, text.lower())
+        if m:
+            correction = m.group(1).strip()
+            break
+    if correction:
+        save_hint(correction)
+        speak(f"Got it, I'll remember {correction}.")
+        return True
 
     reply_box = [None]
     def fetch():
