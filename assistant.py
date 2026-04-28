@@ -4,6 +4,7 @@ import time
 import random
 import tempfile
 import subprocess
+import threading
 import urllib.request
 import urllib.parse
 import numpy as np
@@ -84,20 +85,30 @@ def web_search(query: str) -> str:
         return f"Search failed: {e}"
 
 def get_sports_score(team: str) -> str:
-    try:
-        encoded = urllib.parse.quote(team)
-        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+    def search_scoreboard(url, team_lower):
         with urllib.request.urlopen(url, timeout=5) as r:
             data = json.loads(r.read().decode())
-        games = data.get("events", [])
-        for game in games:
-            name = game.get("name", "").lower()
-            if team.lower() in name:
-                status = game["status"]["type"]["description"]
+        for game in data.get("events", []):
+            if team_lower in game.get("name", "").lower():
+                status      = game["status"]["type"]["description"]
                 competitors = game["competitions"][0]["competitors"]
-                scores = {c["team"]["displayName"]: c["score"] for c in competitors}
-                return f"{game['name']}: {scores} — {status}"
-        return f"No current game found for {team}."
+                scores      = {c["team"]["displayName"]: c["score"] for c in competitors}
+                return f"{game['name']}: {' vs '.join(f'{k} {v}' for k,v in scores.items())} — {status}"
+        return None
+
+    try:
+        from datetime import date, timedelta
+        team_lower = team.lower()
+        base = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+
+        # Check today then yesterday
+        for delta in [0, -1]:
+            day = (date.today() + timedelta(days=delta)).strftime("%Y%m%d")
+            result = search_scoreboard(f"{base}?dates={day}", team_lower)
+            if result:
+                return result
+
+        return f"No recent games found for {team}."
     except Exception as e:
         return f"Couldn't fetch scores: {e}"
 
@@ -151,7 +162,8 @@ def find_respeaker():
             return i
     raise RuntimeError("ReSpeaker not found — is it plugged in?")
 
-def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS):
+def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS,
+                    energy_threshold=ENERGY_THRESHOLD, min_speech_secs=MIN_SPEECH_SECS):
     chunk_dur     = 0.3
     chunk_samples = int(SAMPLE_RATE * chunk_dur)
     silent_needed = int(SILENCE_SECS / chunk_dur)
@@ -166,7 +178,7 @@ def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS):
             chunk, _ = stream.read(chunk_samples)
             chunk    = chunk.flatten()
             energy   = np.abs(chunk).mean()
-            if energy > ENERGY_THRESHOLD:
+            if energy > energy_threshold:
                 speech_started = True
                 silent_chunks  = 0
                 recorded.extend(chunk)
@@ -176,16 +188,22 @@ def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS):
                 if silent_chunks >= silent_needed:
                     break
 
-    if len(recorded) < int(SAMPLE_RATE * MIN_SPEECH_SECS):
+    if len(recorded) < int(SAMPLE_RATE * min_speech_secs):
         return np.array([], dtype=np.int16)
     return np.array(recorded, dtype=np.int16)
+
+WHISPER_HINT = (
+    "Lakers, Celtics, Warriors, Bulls, Heat, Knicks, Spurs, Nets, Clippers, Nuggets, "
+    "Suns, Mavericks, Bucks, Sixers, Raptors, Rockets, Pistons, Pacers, "
+    "weather, Corpus Christi, Jarvis, nevermind, go to sleep"
+)
 
 def transcribe(audio_array):
     if len(audio_array) < SAMPLE_RATE * 0.3:
         return ""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         wav.write(f.name, SAMPLE_RATE, audio_array)
-        segments, _ = whisper.transcribe(f.name, language="en")
+        segments, _ = whisper.transcribe(f.name, language="en", initial_prompt=WHISPER_HINT)
         text = " ".join(s.text for s in segments).strip()
         os.unlink(f.name)
     return text
@@ -274,9 +292,20 @@ def handle_query(text):
     if any(p in text.lower() for p in SLEEP_PHRASES):
         speak("Going to sleep. Say Hey Jarvis when you need me.")
         return "sleep"
+
+    reply_box = [None]
+    def fetch():
+        reply_box[0] = ask_claude(text)
+
+    claude_thread = threading.Thread(target=fetch)
+    claude_thread.start()
+
+    # Play thinking phrase in parallel with Claude API call for complex questions
     if not is_simple_question(text):
         speak(random.choice(THINKING_PHRASES))
-    reply = ask_claude(text)
+
+    claude_thread.join()
+    reply = reply_box[0]
     print(f"  Jarvis: {reply}")
     speak(reply)
     return True
@@ -305,9 +334,10 @@ def main():
             if result == "sleep" or not result:
                 continue
 
-            # Follow-up window — no wake word needed
+            # Follow-up window — more sensitive, no wake word needed
             while True:
-                audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS)
+                audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS,
+                                        energy_threshold=800, min_speech_secs=0.4)
                 if len(audio) == 0:
                     print("  Follow-up window closed.")
                     break
