@@ -251,15 +251,19 @@ def find_respeaker():
     raise RuntimeError("ReSpeaker not found — is it plugged in?")
 
 def ensure_bluetooth():
-    result = subprocess.run(
-        ["bluetoothctl", "info", BT_SPEAKER_MAC],
-        capture_output=True, text=True
-    )
-    if "Connected: yes" not in result.stdout:
-        print("  Bluetooth speaker not connected — reconnecting...")
+    for attempt in range(10):
+        result = subprocess.run(
+            ["bluetoothctl", "info", BT_SPEAKER_MAC],
+            capture_output=True, text=True
+        )
+        if "Connected: yes" in result.stdout:
+            print("  Bluetooth connected.")
+            return
+        print(f"  Bluetooth not connected, attempt {attempt + 1}/10...")
         subprocess.run(["bluetoothctl", "connect", BT_SPEAKER_MAC],
                        capture_output=True, timeout=10)
-        time.sleep(2)
+        time.sleep(3)
+    print("  Warning: Bluetooth speaker could not be connected.")
 
 def record_with_vad(device_index, max_seconds=MAX_RECORD_SECS,
                     energy_threshold=ENERGY_THRESHOLD, min_speech_secs=MIN_SPEECH_SECS):
@@ -312,7 +316,14 @@ def speak(text):
     warmup = np.zeros(int(rate * BT_WARMUP_MS / 1000), dtype=data.dtype)
     tail   = np.zeros(int(rate * BT_TAIL_MS / 1000), dtype=data.dtype)
     wav.write(tmp, rate, np.concatenate([warmup, data, tail]))
-    subprocess.run(["pw-play", tmp], stderr=subprocess.DEVNULL, check=True)
+    for attempt in range(2):
+        result = subprocess.run(["pw-play", tmp], capture_output=True)
+        if result.returncode == 0:
+            break
+        print(f"  pw-play failed (attempt {attempt+1}), reconnecting Bluetooth...")
+        subprocess.run(["bluetoothctl", "connect", BT_SPEAKER_MAC],
+                       capture_output=True, timeout=10)
+        time.sleep(3)
     os.unlink(tmp)
     time.sleep(POST_SPEAK_DELAY)
 
