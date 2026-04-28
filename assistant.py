@@ -17,6 +17,13 @@ from openwakeword.model import Model
 from faster_whisper import WhisperModel
 import anthropic
 
+# Optional LED support — fails gracefully if hardware not found
+try:
+    import usb.core as _usb_core
+    _LED_AVAILABLE = True
+except ImportError:
+    _LED_AVAILABLE = False
+
 # ── Config ────────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 WAKE_WORD_MODEL   = "/home/trips0007/javi-pi/venv/lib/python3.13/site-packages/openwakeword/resources/models/hey_jarvis_v0.1.onnx"
@@ -67,6 +74,7 @@ conversation  = []
 _device_index = 0
 _timers       = []  # active timer threads
 _keepalive    = None
+_led_ring     = None
 
 # ── Whisper hint learning ─────────────────────────────────────────────────────
 _BASE_HINTS = (
@@ -93,6 +101,37 @@ def save_hint(word: str):
         with open(HINTS_FILE, "a") as f:
             f.write(word + "\n")
         print(f"  Hint saved: {word}")
+
+# ── ReSpeaker LED ─────────────────────────────────────────────────────────────
+# XVF3800 is VID=0x2886 PID=0x001a — pixel_ring's find() hardcodes 0x0018 so we bypass it
+def _init_led():
+    global _led_ring
+    if not _LED_AVAILABLE:
+        return
+    try:
+        dev = _usb_core.find(idVendor=0x2886, idProduct=0x001a)
+        if dev is None:
+            print("  LED: ReSpeaker 0x001a not found")
+            return
+        from pixel_ring.usb_pixel_ring_v2 import PixelRing
+        _led_ring = PixelRing(dev)
+        _led_ring.off()
+        print("  LED: initialized")
+    except Exception as e:
+        print(f"  LED init failed (non-fatal): {e}")
+
+def led(state: str):
+    if _led_ring is None:
+        return
+    try:
+        if state == "listen":
+            _led_ring.trace()          # DOA direction-of-arrival spinning
+        elif state == "think":
+            _led_ring.mono(0x000060)   # dim solid blue while processing
+        elif state == "off":
+            _led_ring.off()
+    except Exception as e:
+        print(f"  LED error: {e}")
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 def get_weather(city: str = HOME_CITY) -> str:
@@ -137,16 +176,6 @@ def get_news(topic: str = "top") -> str:
         return "Here are the top headlines: " + ". ".join(headlines)
     except Exception as e:
         return f"News unavailable: {e}"
-
-def wikipedia_lookup(query: str) -> str:
-    try:
-        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(query)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "JarvisPi/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.loads(r.read().decode())
-        return data.get("extract", "No summary found.")[:400]
-    except Exception as e:
-        return f"Wikipedia unavailable: {e}"
 
 def web_search(query: str) -> str:
     try:
@@ -217,10 +246,6 @@ TOOLS = [
      "description": "Latest news headlines. Topics: top, us, tech, sports, business.",
      "input_schema": {"type": "object", "properties": {
          "topic": {"type": "string"}}, "required": []}},
-    {"name": "wikipedia_lookup",
-     "description": "Look up a person, place, event, or concept on Wikipedia.",
-     "input_schema": {"type": "object", "properties": {
-         "query": {"type": "string"}}, "required": ["query"]}},
     {"name": "web_search",
      "description": "Search the web for anything not covered by other tools.",
      "input_schema": {"type": "object", "properties": {
@@ -238,33 +263,12 @@ TOOL_FUNCTIONS = {
     "get_weather":      get_weather,
     "get_stock":        get_stock,
     "get_news":         get_news,
-    "wikipedia_lookup": wikipedia_lookup,
     "web_search":       web_search,
     "get_sports_score": get_sports_score,
     "get_datetime":     get_datetime,
 }
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
-# ── ReSpeaker LED control ─────────────────────────────────────────────────────
-def led(state: str):
-    # States: listening (cyan spin), thinking (yellow pulse), speaking (off), off
-    color_map = {
-        "listening": "0,50,50",   # cyan
-        "thinking":  "50,50,0",   # yellow
-        "speaking":  "0,0,0",     # off while speaking
-        "off":       "0,0,0",
-        "ready":     "0,0,30",    # dim blue at rest
-    }
-    color = color_map.get(state, "0,0,0")
-    try:
-        # Try ALSA control first (works on most ReSpeaker models)
-        subprocess.run(
-            ["amixer", "-c", "2", "cset", "name='LED Color'", color],
-            capture_output=True, timeout=2
-        )
-    except Exception:
-        pass  # LEDs not controllable on this firmware — silently skip
-
 # ── Speaker keepalive ─────────────────────────────────────────────────────────
 def start_keepalive():
     def _loop():
@@ -387,7 +391,6 @@ def set_timer(seconds: int, label: str = "Timer"):
 def listen_for_wake_word(device_index):
     chunk_size = 1280
     print("Listening for 'Hey Jarvis'...")
-    led("ready")
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
                         blocksize=chunk_size, device=device_index) as stream:
         while True:
@@ -395,7 +398,6 @@ def listen_for_wake_word(device_index):
             prediction = oww.predict(chunk.flatten().astype(np.int16))
             if list(prediction.values())[0] >= WAKE_THRESHOLD:
                 oww.reset()
-                led("listening")
                 return
 
 # ── Claude ────────────────────────────────────────────────────────────────────
@@ -479,7 +481,7 @@ def handle_query(text):
 
     # Status / capabilities
     if any(p in low for p in STATUS_PHRASES):
-        speak("I can check weather, stocks, news, sports scores, Wikipedia, set timers, "
+        speak("I can check weather, stocks, news, sports scores, set timers, "
               "control volume, answer questions, and search the web.")
         return True
 
@@ -514,7 +516,6 @@ def handle_query(text):
     def fetch():
         reply_box[0] = ask_claude(text)
 
-    led("thinking")
     claude_thread = threading.Thread(target=fetch)
     claude_thread.start()
 
@@ -522,7 +523,6 @@ def handle_query(text):
         speak(random.choice(THINKING_PHRASES))
 
     claude_thread.join()
-    led("speaking")
     print(f"  Jarvis: {reply_box[0]}")
     speak(reply_box[0])
     return True
@@ -533,44 +533,59 @@ def main():
     _device_index = find_respeaker()
     print(f"ReSpeaker at index {_device_index}")
 
+    _init_led()
     ensure_bluetooth()
     start_keepalive()
+    led("off")
     speak("Jarvis is ready.")
-    led("ready")
-
     while True:
         try:
+            # Idle — LED off while waiting for wake word
             listen_for_wake_word(_device_index)
+
+            # Wake word heard — light up in DOA mode while recording
+            led("listen")
             time.sleep(0.6)
 
             audio = record_with_vad(_device_index)
             text  = transcribe(audio)
 
             if not text:
+                # Still need input — stay in listen mode, greet, record again
                 speak(random.choice(GREETINGS))
                 audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS)
                 text  = transcribe(audio)
 
+            # Got text — solid while thinking + speaking
+            led("think")
             result = handle_query(text)
+            led("off")
+
             if result == "sleep" or not result:
                 continue
 
-            # Follow-up window
+            # Follow-up window — listen mode between replies
             while True:
+                led("listen")
                 audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS,
                                         energy_threshold=800, min_speech_secs=0.4)
                 if len(audio) == 0:
+                    led("off")
                     print("  Follow-up window closed.")
                     break
-                text   = transcribe(audio)
+                text = transcribe(audio)
+                led("think")
                 result = handle_query(text)
+                led("off")
                 if result == "sleep" or not result:
                     break
 
         except KeyboardInterrupt:
+            led("off")
             print("\nShutting down.")
             break
         except Exception as e:
+            led("off")
             print(f"Error: {e}")
             time.sleep(1)
 
