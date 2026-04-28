@@ -103,7 +103,21 @@ def save_hint(word: str):
         print(f"  Hint saved: {word}")
 
 # ── ReSpeaker LED ─────────────────────────────────────────────────────────────
-# XVF3800 is VID=0x2886 PID=0x001a — pixel_ring's find() hardcodes 0x0018 so we bypass it
+# Bypass pixel_ring entirely — its __init__.py crashes on SPI init (no SPI device on Pi 5).
+# Send USB control transfers directly. XVF3800 firmware wIndex pattern codes:
+#   0 = TRACE (DOA)   1 = MONO   4 = THINK (pulse)   5 = SPIN
+class _LEDRing:
+    def __init__(self, dev):
+        self.dev = dev
+
+    def _cmd(self, pattern, color=0):
+        # bmRequestType=0x40 vendor-device, bRequest=0, wValue=color(16-bit), wIndex=pattern
+        self.dev.ctrl_transfer(0x40, 0, color & 0xFFFF, pattern, [0])
+
+    def trace(self):  self._cmd(0)       # DOA direction tracking (spinning)
+    def think(self):  self._cmd(4)       # pulsing think animation
+    def off(self):    self._cmd(1, 0)    # MONO mode with color 0 = all black/off
+
 def _init_led():
     global _led_ring
     if not _LED_AVAILABLE:
@@ -113,8 +127,7 @@ def _init_led():
         if dev is None:
             print("  LED: ReSpeaker 0x001a not found")
             return
-        from pixel_ring.usb_pixel_ring_v2 import PixelRing
-        _led_ring = PixelRing(dev)
+        _led_ring = _LEDRing(dev)
         _led_ring.off()
         print("  LED: initialized")
     except Exception as e:
@@ -125,11 +138,11 @@ def led(state: str):
         return
     try:
         if state == "listen":
-            _led_ring.trace()          # DOA direction-of-arrival spinning
+            _led_ring.trace()   # DOA direction-of-arrival spinning
         elif state == "think":
-            _led_ring.mono(0x000060)   # dim solid blue while processing
+            _led_ring.think()   # pulsing animation while processing
         elif state == "off":
-            _led_ring.off()
+            _led_ring.off()     # MONO black = all LEDs off
     except Exception as e:
         print(f"  LED error: {e}")
 
