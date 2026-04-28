@@ -1,0 +1,18 @@
+[Unit]
+Description=Jarvis Voice Assistant
+After=network.target bluetooth.target sound.target
+Wants=bluetooth.target
+
+[Service]
+User=trips0007
+WorkingDirectory=/home/trips0007/javi-pi
+EnvironmentFile=/home/trips0007/javi-pi/.env
+ExecStartPre=/bin/sleep 10
+ExecStart=/home/trips0007/javi-pi/venv/bin/python3 /home/trips0007/javi-pi/assistant.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/trips0007/javi-pi/jarvis.log
+StandardError=append:/home/trips0007/javi-pi/jarvis.log
+
+[Install]
+WantedBy=multi-user.target
