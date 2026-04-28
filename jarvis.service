@@ -13,8 +13,8 @@ ExecStartPre=/bin/sleep 20
 ExecStart=/home/trips0007/javi-pi/venv/bin/python3 /home/trips0007/javi-pi/assistant.py
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/trips0007/javi-pi/jarvis.log
-StandardError=append:/home/trips0007/javi-pi/jarvis.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
