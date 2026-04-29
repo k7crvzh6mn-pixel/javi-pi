@@ -122,8 +122,6 @@ def led(state: str):
         return
     if state == "listen":
         _xvf("LED_EFFECT", 4)            # DOA spinning — follows your voice
-    elif state == "followup":
-        _xvf("LED_EFFECT", 1)            # slow breath — still open, not actively tracking
     elif state == "think":
         _xvf("LED_EFFECT", 3)            # solid color while processing
         _xvf("LED_COLOR", 0x000060)      # dim blue
@@ -556,26 +554,6 @@ def main():
             led("think")
             result = handle_query(text)
             led("off")
-
-            if result == "sleep" or not result:
-                continue
-
-            # Follow-up window — breath mode while waiting, DOA only on wake word
-            while True:
-                time.sleep(1.2)  # let speaker echo clear before mic opens
-                led("followup")
-                audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS,
-                                        energy_threshold=800, min_speech_secs=0.4)
-                if len(audio) == 0:
-                    led("off")
-                    print("  Follow-up window closed.")
-                    break
-                text = transcribe(audio)
-                led("think")
-                result = handle_query(text)
-                led("off")
-                if result == "sleep" or not result:
-                    break
 
         except KeyboardInterrupt:
             led("off")
