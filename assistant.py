@@ -17,12 +17,7 @@ from openwakeword.model import Model
 from faster_whisper import WhisperModel
 import anthropic
 
-# Optional LED support — fails gracefully if hardware not found
-try:
-    import usb.core as _usb_core
-    _LED_AVAILABLE = True
-except ImportError:
-    _LED_AVAILABLE = False
+XVF_HOST = "/home/trips0007/xvf_host/xvf_host"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -74,7 +69,7 @@ conversation  = []
 _device_index = 0
 _timers       = []  # active timer threads
 _keepalive    = None
-_led_ring     = None
+_led_available = os.path.exists(XVF_HOST)
 
 # ── Whisper hint learning ─────────────────────────────────────────────────────
 _BASE_HINTS = (
@@ -103,48 +98,35 @@ def save_hint(word: str):
         print(f"  Hint saved: {word}")
 
 # ── ReSpeaker LED ─────────────────────────────────────────────────────────────
-# Bypass pixel_ring entirely — its __init__.py crashes on SPI init (no SPI device on Pi 5).
-# Send USB control transfers directly. XVF3800 firmware wIndex pattern codes:
-#   0 = TRACE (DOA)   1 = MONO   4 = THINK (pulse)   5 = SPIN
-class _LEDRing:
-    def __init__(self, dev):
-        self.dev = dev
-
-    def _cmd(self, pattern, color=0):
-        # bmRequestType=0x40 vendor-device, bRequest=0, wValue=color(16-bit), wIndex=pattern
-        self.dev.ctrl_transfer(0x40, 0, color & 0xFFFF, pattern, [0])
-
-    def trace(self):  self._cmd(0)       # DOA direction tracking (spinning)
-    def think(self):  self._cmd(4)       # pulsing think animation
-    def off(self):    self._cmd(1, 0)    # MONO mode with color 0 = all black/off
-
+# XVF3800 LED controlled via xvf_host CLI (raw USB ctrl_transfer not supported by firmware)
+# LED_EFFECT: 0=off, 3=single color, 4=DOA direction tracking
 def _init_led():
-    global _led_ring
-    if not _LED_AVAILABLE:
-        return
-    try:
-        dev = _usb_core.find(idVendor=0x2886, idProduct=0x001a)
-        if dev is None:
-            print("  LED: ReSpeaker 0x001a not found")
-            return
-        _led_ring = _LEDRing(dev)
-        _led_ring.off()
+    if _led_available:
+        _xvf("LED_EFFECT", 0)
         print("  LED: initialized")
-    except Exception as e:
-        print(f"  LED init failed (non-fatal): {e}")
+    else:
+        print(f"  LED: xvf_host not found at {XVF_HOST}")
 
-def led(state: str):
-    if _led_ring is None:
-        return
+def _xvf(*args):
     try:
-        if state == "listen":
-            _led_ring.trace()   # DOA direction-of-arrival spinning
-        elif state == "think":
-            _led_ring.think()   # pulsing animation while processing
-        elif state == "off":
-            _led_ring.off()     # MONO black = all LEDs off
+        subprocess.run(
+            [XVF_HOST, "-u", "usb"] + [str(a) for a in args],
+            capture_output=True, timeout=3,
+            cwd="/home/trips0007/xvf_host"
+        )
     except Exception as e:
         print(f"  LED error: {e}")
+
+def led(state: str):
+    if not _led_available:
+        return
+    if state == "listen":
+        _xvf("LED_EFFECT", 4)            # DOA spinning — follows your voice
+    elif state == "think":
+        _xvf("LED_EFFECT", 3)            # solid color while processing
+        _xvf("LED_COLOR", 0x000060)      # dim blue
+    elif state == "off":
+        _xvf("LED_EFFECT", 0)            # all off
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 def get_weather(city: str = HOME_CITY) -> str:
@@ -546,10 +528,9 @@ def main():
     _device_index = find_respeaker()
     print(f"ReSpeaker at index {_device_index}")
 
-    _init_led()
     ensure_bluetooth()
     start_keepalive()
-    led("off")
+    _init_led()
     speak("Jarvis is ready.")
     while True:
         try:
