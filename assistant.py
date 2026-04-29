@@ -32,7 +32,6 @@ WHISPER_MODEL     = "tiny"
 BT_WARMUP_MS      = 600
 BT_TAIL_MS        = 400
 POST_SPEAK_DELAY  = 0.6
-FOLLOW_UP_SECS    = 10
 SILENCE_SECS      = 1.5
 ENERGY_THRESHOLD  = 1200
 MIN_SPEECH_SECS   = 0.6
@@ -545,10 +544,8 @@ def main():
             text  = transcribe(audio)
 
             if not text:
-                # Still need input — stay in listen mode, greet, record again
-                speak(random.choice(GREETINGS))
-                audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS)
-                text  = transcribe(audio)
+                led("off")
+                continue
 
             # Got text — solid while thinking + speaking
             led("think")
