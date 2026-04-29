@@ -64,7 +64,6 @@ THINKING_PHRASES = [
 client        = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 whisper       = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
 oww           = Model(wakeword_model_paths=[WAKE_WORD_MODEL])
-conversation  = []
 _device_index = 0
 _timers       = []  # active timer threads
 _keepalive    = None
@@ -396,8 +395,7 @@ def listen_for_wake_word(device_index):
 
 # ── Claude ────────────────────────────────────────────────────────────────────
 def ask_claude(text):
-    conversation.append({"role": "user", "content": text})
-    messages = list(conversation)
+    messages = [{"role": "user", "content": text}]
 
     while True:
         response = client.messages.create(
@@ -408,7 +406,9 @@ def ask_claude(text):
                 "Responses are spoken aloud — keep them concise and conversational. "
                 "No markdown, bullet points, or special characters. "
                 "Don't address the user by name in every response. "
-                "Use tools for any current or real-world information."
+                "Only use tools for live data: current weather, live stock prices, today's news, "
+                "live sports scores, or searching for something you don't already know. "
+                "Answer knowledge questions (history, books, math, definitions, explanations) directly without tools."
             ),
             tools=TOOLS,
             messages=messages,
@@ -428,9 +428,7 @@ def ask_claude(text):
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
         else:
-            reply = response.content[0].text
-            conversation.append({"role": "assistant", "content": reply})
-            return reply
+            return response.content[0].text
 
 # ── Query handler ─────────────────────────────────────────────────────────────
 def is_simple_question(text):
@@ -455,7 +453,6 @@ def parse_timer(text):
     return None, None
 
 def handle_query(text):
-    global conversation
     if not text:
         return False
 
@@ -467,10 +464,9 @@ def handle_query(text):
         speak("Going to sleep. Say Hey Jarvis when you need me.")
         return "sleep"
 
-    # Reset conversation
+    # Reset (no-op now — each Hey Jarvis already starts fresh)
     if any(p in low for p in RESET_PHRASES):
-        conversation = []
-        speak("Done, starting fresh.")
+        speak("Already starting fresh each time.")
         return True
 
     # Status / capabilities
