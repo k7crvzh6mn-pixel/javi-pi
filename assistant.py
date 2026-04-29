@@ -560,6 +560,7 @@ def main():
 
             # Follow-up window — listen mode between replies
             while True:
+                time.sleep(1.2)  # let speaker echo clear before mic opens
                 led("listen")
                 audio = record_with_vad(_device_index, max_seconds=FOLLOW_UP_SECS,
                                         energy_threshold=800, min_speech_secs=0.4)
